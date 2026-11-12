@@ -1,11 +1,13 @@
-name: SMS Bot v3
+name: SMS Bot v4 - Sifir Key
 
 on:
   schedule:
-    # Sabah: UTC 04:00 = TR 07:00
+    # Sabah: UTC 04:00 = TR 07:00 (Hava + Motivasyon)
     - cron: '0 4 * * *'
-    # Aksam: UTC 17:00 = TR 20:00 (mac + bonus)
+    # Aksam: UTC 17:00 = TR 20:00 (Ingilizce/Teknoloji + Mac varsa skor)
     - cron: '0 17 * * *'
+
+  # Manuel test butonu
   workflow_dispatch:
 
 jobs:
@@ -20,8 +22,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: sent_cache.json
-          key: sms-v3-${{ github.run_number }}
-          restore-keys: sms-v3-
+          key: sms-v4-${{ github.run_number }}
+          restore-keys: sms-v4-
 
       - name: SMS Gonder
         env:
@@ -30,7 +32,6 @@ jobs:
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           MY_PHONE: ${{ secrets.MY_PHONE }}
           SEHIR: ${{ secrets.SEHIR }}
-          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         run: python sms_bot.py
 
       - name: Cache Kaydet
