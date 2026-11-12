@@ -8,9 +8,6 @@
   🎮 Teknoloji haberi (akşamları dönüşümlü)
   ⚽ GS, FB, BJK ve Türkiye maç skorları (ESPN Açık API - Şifresiz/Keysiz)
      -> SADECE maç bitmişse ve bugün oynandıysa SMS gider!
-
-Ek hiçbir hesap (RapidAPI vs.) GEREKMEZ!
-Sadece GitHub + Twilio yeterlidir.
 """
 
 import os
@@ -18,22 +15,51 @@ import json
 import hashlib
 import urllib.request
 import urllib.parse
+import urllib.error
 import base64
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 
 # ── Ayarlar (GitHub Secrets'tan) ───────────────────────────────
-TWILIO_SID   = os.environ.get("TWILIO_SID", "")
-TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN", "")
-TWILIO_FROM  = os.environ.get("TWILIO_FROM", "")
-MY_PHONE     = os.environ.get("MY_PHONE", "")
-SEHIR        = os.environ.get("SEHIR", "Istanbul")
+TWILIO_SID   = os.environ.get("TWILIO_SID", "").strip()
+TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN", "").strip()
+TWILIO_FROM  = os.environ.get("TWILIO_FROM", "").strip()
+MY_PHONE     = os.environ.get("MY_PHONE", "").strip()
+SEHIR        = os.environ.get("SEHIR", "Istanbul").strip()
 
-# ── Karakter Dönüştürme (SMS tasarrufu) ─────────────────────────
+# ── Telefon Numarası Format Temizleyici (E.164 Düzeltici) ───────
+def format_phone(phone_str, default_tr=True):
+    """
+    Telefon numarasını Twilio'nun istediği E.164 formatına (+905321234567) çevirir.
+    Boşluk, parantez veya eksik +90 hatalarını otomatik düzeltir.
+    """
+    if not phone_str:
+        return ""
+    p = phone_str.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").strip()
+    if p.startswith("+"):
+        return p
+    if p.startswith("00"):
+        return "+" + p[2:]
+    if default_tr:
+        if p.startswith("0") and len(p) == 11:  # 0532xxxxxxx
+            return "+90" + p[1:]
+        elif p.startswith("5") and len(p) == 10:  # 532xxxxxxx
+            return "+90" + p
+        elif p.startswith("90"):
+            return "+" + p
+    return "+" + p
+
+# ── Karakter Dönüştürme (SMS tasarrufu ve ASCII temizliği) ─────
 TR = str.maketrans("çÇğĞıİöÖşŞüÜâÂîÎûÛ", "cCgGiIoOsSuUaAiIuU")
 
 def tr(t):
-    return str(t).translate(TR).replace("\n", " ").replace("  ", " ").strip()
+    if not t: return ""
+    # Akıllı tırnak ve tire işaretlerini düzelt
+    t = str(t).replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"').replace("–", "-").replace("—", "-")
+    t = t.translate(TR)
+    # Sadece standart ASCII karakterleri bırak (Twilio 400 ve segment patlamasını engeller)
+    t = "".join(c for c in t if 32 <= ord(c) < 127)
+    return t.replace("  ", " ").strip()
 
 CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sent_cache.json")
 
@@ -138,14 +164,13 @@ def teknoloji():
         return t[:60] + "..." if len(t) > 60 else t
     return None
 
-# ── ESPN AÇIK API: MAÇ SKORLARI (HİÇBİR KEY / ÜYELİK GEREKTİRMEZ) ──
-# Süper Lig, Şampiyonlar Ligi, Avrupa Ligi, Konferans Ligi, Uluslar Ligi
+# ── ESPN AÇIK API: MAÇ SKORLARI ────────────────────────────────
 LIGLER = [
     "tur.1",             # Trendyol Süper Lig
-    "uefa.champions",    # Şampiyonlar Ligi (GS/FB/BJK)
+    "uefa.champions",    # Şampiyonlar Ligi
     "uefa.europa",       # UEFA Avrupa Ligi
     "uefa.europa.conf",  # Konferans Ligi
-    "uefa.nations",      # Uluslar Ligi (Milli Takım)
+    "uefa.nations",      # Uluslar Ligi
     "fifa.friendly",     # Hazırlık Maçları
     "fifa.worldq.uefa",  # Dünya Kupası Elemeleri
     "uefa.euroq",        # Avrupa Şampiyonası Elemeleri
@@ -184,7 +209,6 @@ def mac_skorlari():
                 is_completed = status_info.get("completed", False)
                 state = status_info.get("state", "")
 
-                # Sadece bitmiş maçlar (Full Time / post)
                 if not (is_completed or state == "post"):
                     continue
 
@@ -201,7 +225,6 @@ def mac_skorlari():
                 t1_low = tr(t1_name).lower()
                 t2_low = tr(t2_name).lower()
 
-                # Bizim takımlardan biri oynadı mı?
                 ilgili = any(k in t1_low or k in t2_low for k in HEDEF_TAKIMLAR.keys())
                 if ilgili:
                     kisa1 = kisalt_isim(t1_name)
@@ -209,8 +232,7 @@ def mac_skorlari():
                     mac_sonuc = f"{kisa1} {t1_score}-{t2_score} {kisa2}"
                     if mac_sonuc not in skorlar:
                         skorlar.append(mac_sonuc)
-        except Exception as e:
-            # Hata verirse bir sonraki lige geçer
+        except Exception:
             continue
 
     return skorlar
@@ -219,15 +241,28 @@ def mac_skorlari():
 def sms_gonder(mesaj):
     if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, MY_PHONE]):
         print("[!] Twilio ayarlari eksik!")
+        print(f"    TWILIO_SID: {'VAR' if TWILIO_SID else 'YOK'}")
+        print(f"    TWILIO_TOKEN: {'VAR' if TWILIO_TOKEN else 'YOK'}")
+        print(f"    TWILIO_FROM: {'VAR' if TWILIO_FROM else 'YOK'}")
+        print(f"    MY_PHONE: {'VAR' if MY_PHONE else 'YOK'}")
         return False
 
-    if len(mesaj) > 155:
-        mesaj = mesaj[:152] + "..."
+    # Numara formatlarını garantiye al
+    to_phone = format_phone(MY_PHONE, default_tr=True)
+    from_phone = format_phone(TWILIO_FROM, default_tr=False)
+
+    # 160 karaktere sığdır
+    temiz_mesaj = tr(mesaj)
+    if len(temiz_mesaj) > 155:
+        temiz_mesaj = temiz_mesaj[:152] + "..."
 
     url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json"
     params = urllib.parse.urlencode({
-        "To": MY_PHONE, "From": TWILIO_FROM, "Body": mesaj,
-    }).encode()
+        "To": to_phone,
+        "From": from_phone,
+        "Body": temiz_mesaj,
+    }).encode("utf-8")
+
     cred = base64.b64encode(f"{TWILIO_SID}:{TWILIO_TOKEN}".encode()).decode()
     req = urllib.request.Request(url, data=params, method="POST")
     req.add_header("Authorization", f"Basic {cred}")
@@ -236,10 +271,20 @@ def sms_gonder(mesaj):
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             res = json.loads(r.read())
-            print(f"  [OK] SMS yollandi -> {res.get('sid','?')}")
+            print(f"  [OK] SMS basariyla iletildi -> SID: {res.get('sid','?')}")
             return True
+    except urllib.error.HTTPError as e:
+        hata_metni = e.read().decode("utf-8", errors="ignore")
+        print(f"  [HATA] Twilio HTTP {e.code}: {hata_metni}")
+        try:
+            hata_json = json.loads(hata_metni)
+            print(f"  [!] Hata Mesaji: {hata_json.get('message')}")
+            print(f"  [!] Hata Kodu: {hata_json.get('code')}")
+        except:
+            pass
+        return False
     except Exception as e:
-        print(f"  [HATA] SMS gonderilemedi: {e}")
+        print(f"  [HATA] Beklenmeyen hata: {e}")
         return False
 
 # ══════════════════════════════════════════════════════════════
@@ -253,11 +298,11 @@ def main():
     gun_adi = ["Pzt","Sal","Car","Per","Cum","Cmt","Paz"][gun]
 
     print(f"\n{'='*50}")
-    print(f"  SMS Bot v4 | {now.strftime('%d.%m.%Y %H:%M')} {gun_adi}")
+    print(f"  SMS Bot v4.1 | {now.strftime('%d.%m.%Y %H:%M')} {gun_adi}")
     print(f"{'='*50}")
 
     cache = cache_load()
-    utc_saat = now.utcnow().hour
+    utc_saat = datetime.now(timezone.utc).hour
     sms_sayisi = 0
 
     # ── 1) SABAH (UTC 04 = TR 07:00) -> Hava Durumu + Motivasyon ──
